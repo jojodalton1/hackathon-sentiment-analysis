@@ -13,49 +13,94 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Variables globales
+let client;
 let db;
 let moviesCollection;
 let mongoConnected = false;
 
-// Connexion MongoDB avec options SSL améliorées
+// Connexion MongoDB corrigée
 async function connectToMongoDB() {
     try {
+        console.log('🔄 Tentative de connexion à MongoDB...');
+        
+        // Vérifier que l'URI existe
+        if (!process.env.MONGODB_URI) {
+            throw new Error('MONGODB_URI non défini dans .env');
+        }
+        
+        console.log('📡 URI MongoDB détectée');
+        
+        // Options MongoDB corrigées (sans bufferMaxEntries)
         const options = {
             useNewUrlParser: true,
             useUnifiedTopology: true,
-            serverSelectionTimeoutMS: 5000, // Timeout après 5 secondes
+            serverSelectionTimeoutMS: 10000, // 10 secondes
             socketTimeoutMS: 45000,
             family: 4, // Force IPv4
-            bufferMaxEntries: 0,
-            retryWrites: true
+            retryWrites: true,
+            maxPoolSize: 10 // Remplace bufferMaxEntries
         };
 
-        console.log('🔄 Tentative de connexion à MongoDB...');
-        const client = new MongoClient(process.env.MONGODB_URI, options);
+        // Créer la connexion
+        client = new MongoClient(process.env.MONGODB_URI, options);
         
+        // Connexion avec timeout
         await client.connect();
+        console.log('🔗 Client MongoDB connecté');
         
-        // Test de la connexion
+        // Test de ping
         await client.db("admin").command({ ping: 1 });
+        console.log('🏓 Ping MongoDB réussi');
         
-        console.log('✅ Connecté à MongoDB Atlas');
-        
+        // Connexion à la base de données
         db = client.db('sample_mflix');
+        console.log('📚 Connecté à la base sample_mflix');
+        
+        // Vérifier que la collection existe
+        const collections = await db.listCollections().toArray();
+        console.log('📋 Collections disponibles:', collections.map(c => c.name));
+        
         moviesCollection = db.collection('movies');
-        mongoConnected = true;
         
         // Test de la collection
         const count = await moviesCollection.countDocuments();
-        console.log(`📊 Nombre de films dans la base: ${count}`);
+        console.log(`🎬 Nombre total de films: ${count}`);
         
-        // Vérifier que sample_mflix existe
         if (count === 0) {
-            console.log('⚠️ Collection sample_mflix vide - chargeant les sample data...');
+            console.log('⚠️ Collection movies vide!');
+            console.log('💡 Vérifiez que sample_mflix a été chargé lors de la création du cluster');
+            return false;
         }
         
+        // Test d'un échantillon
+        const sampleMovie = await moviesCollection.findOne({ plot: { $exists: true } });
+        if (sampleMovie) {
+            console.log('✅ Échantillon de film trouvé:', sampleMovie.title);
+        }
+        
+        mongoConnected = true;
+        console.log('🎉 MongoDB entièrement connecté et opérationnel!');
         return true;
+        
     } catch (error) {
-        console.error('❌ Erreur connexion MongoDB:', error.message);
+        console.error('❌ Erreur connexion MongoDB:');
+        console.error('   Type:', error.name);
+        console.error('   Message:', error.message);
+        
+        if (error.name === 'MongoNetworkError') {
+            console.error('🌐 Problème réseau - vérifiez:');
+            console.error('   - Connexion internet');
+            console.error('   - Configuration IP autorisées dans Atlas');
+        } else if (error.name === 'MongoAuthenticationError') {
+            console.error('🔐 Problème authentification - vérifiez:');
+            console.error('   - Username/password dans .env');
+            console.error('   - Utilisateur créé dans Database Access');
+        } else if (error.name === 'MongoServerSelectionError') {
+            console.error('🖥️ Problème serveur - vérifiez:');
+            console.error('   - Cluster démarré dans Atlas');
+            console.error('   - URI de connexion correcte');
+        }
+        
         mongoConnected = false;
         return false;
     }
@@ -129,17 +174,19 @@ app.get('/api/movies', async (req, res) => {
         
         if (search) {
             const searchRegex = { $regex: search, $options: 'i' };
-            query.$and = [
-                { plot: { $exists: true, $ne: null } },
-                {
-                    $or: [
-                        { title: searchRegex },
-                        { plot: searchRegex },
-                        { genres: searchRegex },
-                        { cast: searchRegex }
-                    ]
-                }
-            ];
+            query = {
+                $and: [
+                    { plot: { $exists: true, $ne: null } },
+                    {
+                        $or: [
+                            { title: searchRegex },
+                            { plot: searchRegex },
+                            { genres: searchRegex },
+                            { cast: searchRegex }
+                        ]
+                    }
+                ]
+            };
         }
         
         console.log('📊 Exécution de la requête MongoDB...');
@@ -171,9 +218,12 @@ app.get('/api/movies', async (req, res) => {
     } catch (error) {
         console.error('❌ Erreur récupération films:', error.message);
         
-        // Fallback vers données simulées
+        // Fallback vers données simulées améliorées
         console.log('🔄 Utilisation des données simulées...');
-        const fallbackMovies = [
+        const search = req.query.search?.toLowerCase() || '';
+        
+        // Données simulées avec plus de variété
+        let fallbackMovies = [
             {
                 title: "The Shawshank Redemption",
                 year: 1994,
@@ -182,13 +232,50 @@ app.get('/api/movies', async (req, res) => {
                 sentiment: { sentiment: 'positive', score: 0.8 }
             },
             {
+                title: "Mad Max: Fury Road",
+                year: 2015,
+                plot: "An apocalyptic action story set in a stark desert landscape with amazing stunts and fantastic cinematography.",
+                genres: ["Action", "Adventure"],
+                sentiment: { sentiment: 'positive', score: 0.7 }
+            },
+            {
+                title: "John Wick",
+                year: 2014,
+                plot: "A retired hitman seeks vengeance in this brilliant action thriller with excellent choreography.",
+                genres: ["Action", "Crime"],
+                sentiment: { sentiment: 'positive', score: 0.6 }
+            },
+            {
                 title: "The Dark Knight", 
                 year: 2008,
                 plot: "When the menace known as the Joker wreaks havoc and chaos on the people of Gotham, Batman must accept one of the greatest psychological and physical tests.",
                 genres: ["Action", "Crime", "Drama"],
                 sentiment: { sentiment: 'negative', score: -0.3 }
+            },
+            {
+                title: "Saw",
+                year: 2004,
+                plot: "A horror film about a twisted game of survival with disturbing and frightening scenes.",
+                genres: ["Horror", "Thriller"],
+                sentiment: { sentiment: 'negative', score: -0.8 }
+            },
+            {
+                title: "The Notebook",
+                year: 2004,
+                plot: "A beautiful and heartwarming love story that spans decades with wonderful performances.",
+                genres: ["Romance", "Drama"],
+                sentiment: { sentiment: 'positive', score: 0.9 }
             }
         ];
+        
+        // Filtrer selon la recherche
+        if (search) {
+            fallbackMovies = fallbackMovies.filter(movie => 
+                movie.title.toLowerCase().includes(search) ||
+                movie.plot.toLowerCase().includes(search) ||
+                movie.genres.some(genre => genre.toLowerCase().includes(search))
+            );
+        }
         
         res.json(fallbackMovies);
     }
@@ -238,6 +325,35 @@ app.get('/api/sentiment-stats', async (req, res) => {
     }
 });
 
+// Route de debug pour vérifier MongoDB
+app.get('/api/debug', async (req, res) => {
+    const debug = {
+        mongoConnected,
+        envUri: !!process.env.MONGODB_URI,
+        uriFormat: process.env.MONGODB_URI ? process.env.MONGODB_URI.includes('mongodb+srv://') : false,
+        client: !!client,
+        db: !!db,
+        collection: !!moviesCollection
+    };
+    
+    try {
+        if (client) {
+            // Test ping
+            await client.db("admin").command({ ping: 1 });
+            debug.pingSuccess = true;
+            
+            if (moviesCollection) {
+                debug.movieCount = await moviesCollection.countDocuments();
+                debug.sampleMovie = await moviesCollection.findOne({}, { projection: { title: 1, year: 1 } });
+            }
+        }
+    } catch (error) {
+        debug.error = error.message;
+    }
+    
+    res.json(debug);
+});
+
 // Route de test pour vérifier MongoDB
 app.get('/api/test', async (req, res) => {
     try {
@@ -273,20 +389,36 @@ app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// Gestionnaire de fermeture propre
+process.on('SIGINT', async () => {
+    console.log('🛑 Arrêt du serveur...');
+    if (client) {
+        await client.close();
+        console.log('🔌 Connexion MongoDB fermée');
+    }
+    process.exit(0);
+});
+
 // Démarrage du serveur
 async function startServer() {
     console.log('🚀 Démarrage du serveur...');
+    console.log('📁 Variables d\'environnement:');
+    console.log('   - MONGODB_URI:', !!process.env.MONGODB_URI);
+    console.log('   - PORT:', process.env.PORT || 3000);
     
     const mongoSuccess = await connectToMongoDB();
     
     app.listen(PORT, () => {
         console.log(`🌐 Serveur démarré sur http://localhost:${PORT}`);
         console.log(`📡 MongoDB: ${mongoSuccess ? '✅ Connecté' : '❌ Mode dégradé'}`);
+        console.log('🔧 Routes de debug disponibles:');
+        console.log('   - GET /api/debug - Infos de connexion');
+        console.log('   - GET /api/test - Test MongoDB');
         
         if (mongoSuccess) {
-            console.log('🎬 Prêt à analyser 21,000+ films !');
+            console.log('🎬 Prêt à analyser les films !');
         } else {
-            console.log('🔄 Fonctionnement en mode simulation');
+            console.log('🔄 Fonctionnement en mode simulation avec films variés');
         }
     });
 }

@@ -110,7 +110,7 @@ function createSentimentChart(stats) {
 // Rechercher des films
 async function searchMovies() {
     const searchTerm = document.getElementById('searchInput').value.trim();
-    console.log(`🔍 Recherche: "${searchTerm}"`);
+    console.log(`🔍 Recherche: "${searchTerm}"`); // Debug
     await loadMovies(searchTerm);
 }
 
